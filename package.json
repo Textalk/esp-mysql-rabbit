@@ -1,0 +1,15 @@
+{
+  "name": "esp-mysql-rabbit",
+  "version": "1.0.0",
+  "description": "Event Store Promises using MySQL and Rabbit as eventstore",
+  "main": "esp.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.textalk.com/common-js/esp-mysql-rabbit.git"
+  },
+  "author": "Fredrik Liljegren <fredrik.liljegren@textalk.se>",
+  "license": "ISC"
+}
