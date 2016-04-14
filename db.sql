@@ -3,7 +3,7 @@ CREATE TABLE events (
   eventNumber  BIGINT UNSIGNED,
   eventId      VARBINARY(16),
   eventType    VARCHAR(100),
-  created      DATETIME,
+  updated      DATETIME,
   data         TEXT, -- JSON,
   UNIQUE KEY `streamEventNumber` (`streamId`, `eventNumber`),
   UNIQUE KEY `eventId` (`eventId`)

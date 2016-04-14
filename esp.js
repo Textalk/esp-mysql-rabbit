@@ -104,4 +104,71 @@ EspPrototype.subscribeToStream = function(streamId, params) {
   return stream
 }
 
+const mysqlToEvent = row => ({
+  eventId:     row.eventId,    // todo Convert to string from varbin uuid
+  eventType:   row.eventType,
+  eventNumber: row.eventNumber,
+  data:        row.data ? JSON.parse(row.data) : null,
+  streamId:    row.streamId,
+  // EventStore uses a lot of meta fields, isJson, isMetaData, author etc…
+  updated:     row.updated,
+})
+
+EspPrototype.readStreamEventsForward = function(streamId, from, params) {
+  const options = Object.assign({}, this.defaults, params)
+  const stream  = new EventStoreStream()
+
+  const query = this.mysqlConn.query(
+    'SELECT * FROM events WHERE streamId = ? AND eventNumber >= ? ' +
+      'ORDER BY eventNumber LIMIT ?',
+    [streamId, from, options.maxCount]
+  )
+  query
+    .on('error', err => stream.emit('error', err))
+    .on('end',   ()  => stream.push(null))
+    //.on('fields', fields =>
+    .on('result', row => stream.push(mysqlToEvent(row)))
+
+  return stream
+}
+
+EspPrototype.readStreamEventsUntil = function(streamId, from, to, params) {
+  const options = Object.assign({}, this.defaults, params, {maxCount: to - from + 1})
+  const stream  = new EventStoreStream()
+  const subEvents = []
+
+  Promise.resolve()
+    // Check last eventNumber in MySQL.
+    .then(() => new Promise((resolve, reject) => this.mysqlConn.query(
+      'SELECT MAX(eventNumber) FROM events WHERE streamId = ?', [streamId],
+      (err, result, fields) => (err ? reject(err) : resolve(result[0]))
+    )))
+    .then(max => {
+      if (max < to) {
+        // Subscribe before fetching existing events, but be sure not to emit newer events before
+        // all existing are emitted; and make sure no event is emitted twice.
+        const subscribeOptions = Object.assign({}, options, {maxCount: to - max})
+        const subStream = this.subscribeToStream(streamId, subscribeOptions)
+
+        subStream.on('error', err => stream.emit('error', err))
+        subStream.on('result', subEvents.push(mysqlToEvent(row))) /// todo NOT mysqlToEvent!
+      }
+
+      const mysqlStream = this.readStreamEventsForward(streamId, from, options)
+      mysqlStream.pipe(stream, {end: false})
+
+      return new Promise((resolve, reject) => {
+        //// todo: Must record the last ACTUAL eventNumber, that could be higher than max.
+        mysqlStream.on('end',   ()  => resolve(max))
+        mysqlStream.on('error', err => reject(err))
+      })
+    })
+    .then(max => {
+    })
+    .catch(err => stream.emit('error', err))
+
+
+  return stream
+}
+
 module.exports = Esp
