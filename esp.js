@@ -94,11 +94,20 @@ EspPrototype.subscribeToStream = function(streamId, params) {
         channel, queue, channel.bindQueue(queue, this.options.amqp.exchange, streamId)
       ])
     })
-    .then(result => result[0].consume(
-      result[1],
-      msg => stream.push(JSON.parse(msg.content))
-    ))
-    .then(ok     => stream.emit('open'))
+    .then(result => {
+      const channel = result[0]
+      const queue   = result[1]
+      let eventCount = 0
+
+      return channel.consume(queue, msg => {
+        stream.push(JSON.parse(msg.content))
+        if (++eventCount >= options.maxCount) {
+          stream.push(null)
+          channel.close()
+        }
+      })
+    })
+    .then(ok => stream.emit('open'))
     .catch(err => stream.emit('error', err))
 
   return stream
@@ -135,7 +144,15 @@ EspPrototype.readStreamEventsForward = function(streamId, from, params) {
 EspPrototype.readStreamEventsUntil = function(streamId, from, to, params) {
   const options = Object.assign({}, this.defaults, params, {maxCount: to - from + 1})
   const stream  = new EventStoreStream()
-  const subEvents = []
+  const timer   = setTimeout(
+    () => stream.emit('error', new Error('Timeout reached')),
+    options.timeout
+  )
+
+  const end = () => {
+    stream.push(null)
+    return clearTimeout(timer)
+  }
 
   Promise.resolve()
     // Check last eventNumber in MySQL.
@@ -144,29 +161,34 @@ EspPrototype.readStreamEventsUntil = function(streamId, from, to, params) {
       (err, result, fields) => (err ? reject(err) : resolve(result[0]))
     )))
     .then(max => {
-      if (max < to) {
-        // Subscribe before fetching existing events, but be sure not to emit newer events before
-        // all existing are emitted; and make sure no event is emitted twice.
-        const subscribeOptions = Object.assign({}, options, {maxCount: to - max})
-        const subStream = this.subscribeToStream(streamId, subscribeOptions)
+      const subStream = (max > to) ? null
+            : this.subscribeToStream(streamId, Object.assign({}, options, {maxCount: to - max}))
+      if (subStream) subStream.on('error', err => stream.emit('error', err))
+      if (subStream) subStream.pause()
 
-        subStream.on('error', err => stream.emit('error', err))
-        subStream.on('result', subEvents.push(mysqlToEvent(row))) /// todo NOT mysqlToEvent!
-      }
-
-      const mysqlStream = this.readStreamEventsForward(streamId, from, options)
-      mysqlStream.pipe(stream, {end: false})
-
-      return new Promise((resolve, reject) => {
-        //// todo: Must record the last ACTUAL eventNumber, that could be higher than max.
-        mysqlStream.on('end',   ()  => resolve(max))
-        mysqlStream.on('error', err => reject(err))
-      })
+      let lastEventNumber = -1
+      return Promise.all([
+        subStream,
+        new Promise((resolve, reject) => this.readStreamEventsForward(streamId, from, options)
+          .on('error', err   => reject(err))
+          .on('end',   ()    => resolve(lastEventNumber))
+          .on('data',  event => {
+            stream.push(event)
+            lastEventNumber = event.eventNumber
+          })
+        )
+      ])
     })
-    .then(max => {
+    .then(result => {
+      const subStream       = result[0]
+      const lastEventNumber = result[1]
+      if (lastEventNumber === to) return end()
+
+      subStream.on('data', event => {if (event.eventNumber > lastEventNumber) stream.push(event)})
+      subStream.on('end', ()     => end())
+      subStream.resume()
     })
     .catch(err => stream.emit('error', err))
-
 
   return stream
 }
