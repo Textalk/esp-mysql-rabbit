@@ -1,0 +1,11 @@
+stages:
+  - test
+
+test:
+  stage: test
+  script:
+    - export NVM_DIR="/home/gitlab_ci_runner/.nvm"
+    - "[ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\""
+    - nvm use 5
+    - npm install
+    - npm run test-cov
