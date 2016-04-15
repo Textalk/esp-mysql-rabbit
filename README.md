@@ -20,17 +20,22 @@ cat db.sql | mysql -uesp -pesp -Desp
 Connect:
 
 ```
-const esp = await(EventStorePromise({
-  mysql: {
-    user:     'esp',
-    password: 'esp',
-    database: 'esp',
+EventStorePromise(
+  {
+    mysql: {
+      user:     'esp',
+      password: 'esp',
+      database: 'esp',
+    },
+    amqp: {
+      url:      'amqp://localhost',
+      exchange: 'events',
+    }
   },
-  amqp: {
-    url:      'amqp://localhost',
-    exchange: 'events',
-  }
-}, {timeout: 10000}))
+  {timeout: 10000}
+).then(esp => {
+  // Use it…
+})
 ```
 
 MySQL: For transactions to work optimally, the database should NOT have `READ COMMITTED`.
