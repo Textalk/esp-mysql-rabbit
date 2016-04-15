@@ -80,7 +80,7 @@ EspPrototype.subscribeToStream = function(streamId, params) {
   this.amqpConn.createChannel()
     .then(channel => Promise.all([
       channel,
-      channel.assertExchange(this.options.amqp.exchange, 'fanout', {durable: true}),
+      channel.assertExchange(this.options.amqp.exchange, 'topic', {durable: true}),
       channel.assertQueue(null, {durable: false, exclusive: true, autoDelete: true}),
     ]))
     .then(result => {
@@ -191,6 +191,57 @@ EspPrototype.readStreamEventsUntil = function(streamId, from, to, params) {
     .catch(err => stream.emit('error', err))
 
   return stream
+}
+
+EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, events) {
+  return Promise.resolve()
+    .then(() => new Promise((resolve, reject) => this.mysqlConn.query(
+      /// todo  Should be FOR UPDATE, but doesn't seem to make any difference in MySQL?!
+      'SELECT MAX(eventNumber) AS max, UTC_TIMESTAMP(6) AS date '
+        + 'FROM events WHERE streamId = ?', [streamId],
+      (err, result) => (err ? reject(err) : resolve(result[0]))
+    )))
+    .then(result => {
+      let   max     = result.max
+      const updated = result.date
+
+      if (
+        (expectedVersion === -1 && max !== null)
+          || (expectedVersion >= 0 && max !== expectedVersion)
+      ) throw new Error('Unexpected version')
+
+      if (!max) max = -1
+
+      const eventsData = events.map(event => [
+        streamId,
+        ++max,  // eventNumber, will throw error if anyone inserts before.
+        events.eventId,
+        events.eventType,
+        updated,
+        JSON.stringify(event.data)
+      ])
+
+      return Promise.all([
+        eventsData, max,
+        new Promise((resolve, reject) => this.mysqlConn.query(
+          'INSERT INTO events (streamId, eventNumber, eventId, eventType, updated, data) VALUES ?',
+          eventsData,
+          (err, result) => (err ? reject(err) : resolve(result))
+        ))
+      ])
+    })
+    .then(result => {
+      const eventsData = result[0]
+      const max        = result[1]
+
+      /// todo amqp!
+
+      return {
+        result: 0,
+        firstEventNumber: eventsData[0].eventNumber,
+        lastEventNumber:  max,
+      }
+    })
 }
 
 module.exports = Esp

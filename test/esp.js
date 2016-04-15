@@ -89,6 +89,7 @@ describe('esp mysql rabbit', () => {
     it('should get new events when subscribed', aasync(() => {
       let consumeQueue         = null
       let assertExchangeCalled = false
+      let usedRoutingKey       = null
 
       const esp = aawait(Esp({
         mysql:    {},
@@ -96,9 +97,11 @@ describe('esp mysql rabbit', () => {
         mysqlLib: {createConnection: options => ({connect: cb => cb()})},
         amqpLib:  {connect: options => Promise.resolve({createChannel: () => Promise.resolve({
           assertExchange: (exchange, type, options) => Promise.resolve(assertExchangeCalled = true),
-          assertQueue:    (queue, options)  => Promise.resolve({queue: 'foo'}),
-          bindQueue:      (queue, exchange) => Promise.resolve('ok'),
-          consume:        (queue, cb, options)  => {
+          assertQueue:    (queue, options)              => Promise.resolve({queue: 'foo'}),
+          bindQueue:      (queue, exchange, routingKey) => Promise.resolve(
+            usedRoutingKey = routingKey
+          ),
+          consume:        (queue, cb, options)          => {
             consumeQueue = queue
             process.nextTick(() => cb({
               content: new Buffer(JSON.stringify({
@@ -120,6 +123,7 @@ describe('esp mysql rabbit', () => {
 
       assert(assertExchangeCalled)
       assert.equal(consumeQueue,    'foo')
+      assert.equal(usedRoutingKey,  'mystream')
       assert.equal(event.streamId,  'mystream')
       assert.equal(event.eventType, 'myEventType')
       assert.deepEqual(event.data,  {my: 'eventdata'}, 'Event data should be parsed')
@@ -364,6 +368,48 @@ describe('esp mysql rabbit', () => {
         stream.on('error', () => resolve())
         clock.tick(9000)
       }))
+    }))
+  })
+
+  describe('esp.writeEvents()', () => {
+    it('should add events to mysql in a transaction and send them to rabbit', aasync(() => {
+      const mysqlCalls = []
+
+      const esp = aawait(Esp({
+        mysql:    {},
+        amqp:     {exchange: 'events'},
+        mysqlLib: {createConnection: options => ({
+          connect: cb => cb(),
+          query:   (query, values, cb) => {
+            const sql = query.replace(/\?/g, () => values.shift())
+            mysqlCalls.push(sql)
+
+            if (sql.match(/^SELECT MAX/)) {
+              return cb(null, [{max: null, date: '2016-04-14 14:35:17.402727'}])
+            }
+            cb(null, 'foo')
+          }
+        })},
+        amqpLib:  {connect: options => Promise.resolve({createChannel: () => Promise.resolve({
+          assertExchange: (exchange, type, options) => Promise.resolve(),
+          assertQueue:    (queue, options)          => Promise.resolve({queue: 'foo'}),
+          bindQueue:      (queue, exchange)         => Promise.resolve(),
+          close:          ()                        => Promise.resolve(),
+          publish:        (exchange, routingKey, content) => {
+
+          },
+        })})}
+      }))
+
+      const written = aawait(esp.writeEvents('mystream', -1, false, [
+        {eventId: esp.createGuid(), data: {foo: 'bar'}},
+        {eventId: esp.createGuid(), data: {baz: 'qux'}},
+      ]))
+
+      assert.equal(written.result, 0)
+      assert.equal(written.lastEventNumber, 1)
+
+      //assert(false, 'must send amqp too')
     }))
   })
 })
