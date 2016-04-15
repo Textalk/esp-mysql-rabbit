@@ -5,6 +5,7 @@ const util     = require('util')
 const mysql    = require('mysql2')
 const amqp     = require('amqplib')
 const uuid     = require('uuid')
+const Promise  = require('bluebird') // At least until we have array destructuring!
 
 const EspPrototype = {}
 
@@ -32,19 +33,20 @@ const Esp = (options, defaults) => {
   return Promise.resolve()
     // Connect to MySQL and Amqp
     .then(() => {
-      const mysqlConn = esp.mysqlLib.createConnection(options.mysql)
+      const mysqlOptions = Object.assign({}, {dateStrings: true}, options.mysql)
+      const mysqlConn    = esp.mysqlLib.createConnection(mysqlOptions)
 
       // Explicitly connect, to find out any connection errors directly.
       return Promise.all([
         new Promise((resolve, reject) => mysqlConn.connect(
           err => (err ? reject(err) : resolve(mysqlConn))
         )),
-        esp.amqpLib.connect(options.amqp),
+        esp.amqpLib.connect(options.amqp.url),
       ])
     })
-    .then(result => {
-      esp.mysqlConn = result[0]
-      esp.amqpConn  = result[1]
+    .spread((mysqlConn, amqpConn) => {
+      esp.mysqlConn = mysqlConn
+      esp.amqpConn  = amqpConn
 
       /// @todo Catch unexpected close and errors.
       // var dom = domain.create();
@@ -83,20 +85,16 @@ EspPrototype.subscribeToStream = function(streamId, params) {
       channel.assertExchange(this.options.amqp.exchange, 'topic', {durable: true}),
       channel.assertQueue(null, {durable: false, exclusive: true, autoDelete: true}),
     ]))
-    .then(result => {
-      const channel = result[0]
-      const queue   = result[2].queue
-
+    .spread((channel, ok, queueResult) => {
       // Setup the close method, now that we have all variables needed.
       stream.close = () => channel.close()
 
       return Promise.all([
-        channel, queue, channel.bindQueue(queue, this.options.amqp.exchange, streamId)
+        channel, queueResult.queue,
+        channel.bindQueue(queueResult.queue, this.options.amqp.exchange, streamId)
       ])
     })
-    .then(result => {
-      const channel = result[0]
-      const queue   = result[1]
+    .spread((channel, queue, ok) => {
       let eventCount = 0
 
       return channel.consume(queue, msg => {
@@ -151,17 +149,18 @@ EspPrototype.readStreamEventsUntil = function(streamId, from, to, params) {
 
   const end = () => {
     stream.push(null)
-    return clearTimeout(timer)
+    clearTimeout(timer)
   }
 
   Promise.resolve()
     // Check last eventNumber in MySQL.
     .then(() => new Promise((resolve, reject) => this.mysqlConn.query(
-      'SELECT MAX(eventNumber) FROM events WHERE streamId = ?', [streamId],
+      'SELECT MAX(eventNumber) AS max FROM events WHERE streamId = ?', [streamId],
       (err, result, fields) => (err ? reject(err) : resolve(result[0]))
     )))
-    .then(max => {
-      const subStream = (max > to) ? null
+    .then(result => {
+      const max = result.max
+      const subStream = (max >= to) ? null
             : this.subscribeToStream(streamId, Object.assign({}, options, {maxCount: to - max}))
       if (subStream) subStream.on('error', err => stream.emit('error', err))
       if (subStream) subStream.pause()
@@ -184,7 +183,9 @@ EspPrototype.readStreamEventsUntil = function(streamId, from, to, params) {
       const lastEventNumber = result[1]
       if (lastEventNumber === to) return end()
 
-      subStream.on('data', event => {if (event.eventNumber > lastEventNumber) stream.push(event)})
+      subStream.on('data', event => {
+        if (event.eventNumber > lastEventNumber) stream.push(event)
+      })
       subStream.on('end', ()     => end())
       subStream.resume()
     })
@@ -193,30 +194,46 @@ EspPrototype.readStreamEventsUntil = function(streamId, from, to, params) {
   return stream
 }
 
+const uuid2Binary = uuid => {
+  return new Buffer(uuid.replace(/\-/g, ''), 'hex')
+}
+
 EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, events) {
   return Promise.resolve()
+    // Start transaction.
+    .then(() => new Promise((resolve, reject) => this.mysqlConn.beginTransaction(
+      err => (err ? reject(err) : resolve())
+    )))
+
+    // Lock stream rows.
     .then(() => new Promise((resolve, reject) => this.mysqlConn.query(
-      /// todo  Should be FOR UPDATE, but doesn't seem to make any difference in MySQL?!
       'SELECT MAX(eventNumber) AS max, UTC_TIMESTAMP(6) AS date '
-        + 'FROM events WHERE streamId = ?', [streamId],
+        + 'FROM events WHERE streamId = ? LOCK IN SHARE MODE', [streamId],
       (err, result) => (err ? reject(err) : resolve(result[0]))
     )))
+
+    // Format data and insert to MySQL.
     .then(result => {
       let   max     = result.max
       const updated = result.date
 
       if (
-        (expectedVersion === -1 && max !== null)
+        (expectedVersion === this.ExpectedVersion.NoStream && max !== null)
           || (expectedVersion >= 0 && max !== expectedVersion)
       ) throw new Error('Unexpected version')
 
-      if (!max) max = -1
+      if (max === null) max = -1
+
+      // Assign eventNumber to all events.
+      events.forEach(event => {
+        event.eventNumber = ++max
+      })
 
       const eventsData = events.map(event => [
         streamId,
-        ++max,  // eventNumber, will throw error if anyone inserts before.
-        events.eventId,
-        events.eventType,
+        event.eventNumber,
+        uuid2Binary(event.eventId),
+        event.eventType,
         updated,
         JSON.stringify(event.data)
       ])
@@ -225,23 +242,57 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
         eventsData, max,
         new Promise((resolve, reject) => this.mysqlConn.query(
           'INSERT INTO events (streamId, eventNumber, eventId, eventType, updated, data) VALUES ?',
-          eventsData,
+          [eventsData],
           (err, result) => (err ? reject(err) : resolve(result))
         ))
       ])
     })
-    .then(result => {
-      const eventsData = result[0]
-      const max        = result[1]
 
-      /// todo amqp!
+    // MySQL commit
+    .spread((eventsData, max, ok) => Promise.all([
+      eventsData, max,
+      new Promise((resolve, reject) => this.mysqlConn.commit(
+        err => (err ? reject(err) : resolve())
+      ))
+    ]))
+
+    // Catch MySQL problems to rollback and throw
+    .catch(err => {
+      return new Promise((resolve, reject) => this.mysqlConn.rollback(() => reject(err)))
+    })
+
+    // Create AMQP Channel
+    .spread((eventsData, max, ok) => Promise.all([
+      eventsData, max, this.amqpConn.createChannel()
+    ]))
+
+    // Assert events Exchanage
+    .spread((eventsData, max, channel) => Promise.all([
+      eventsData, max, channel,
+      channel.assertExchange(this.options.amqp.exchange, 'topic', {durable: true}),
+    ]))
+
+    // Publish to AMQP
+    .spread((eventsData, max, channel, ok) => {
+      const published = events.map(event => channel.publish(
+        this.options.amqp.exchange, streamId, new Buffer(JSON.stringify(event))
+      ))
+
+      // If any publish-call returned false, we're in trouble…
+      const publishedOk = published.reduce((prev, curr) => (prev & curr), true)
 
       return {
-        result: 0,
+        result:           0,
         firstEventNumber: eventsData[0].eventNumber,
         lastEventNumber:  max,
+        publishedOk:      publishedOk,
       }
     })
+}
+
+EspPrototype.ExpectedVersion = {
+  Any: -2,
+  NoStream: -1,
 }
 
 module.exports = Esp
