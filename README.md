@@ -13,7 +13,7 @@ Using it in your project
 Install:
 
 ```bash
-npm install --save @textalk/esp-mysql-rabbit
+npm install --save esp-mysql-rabbit
 cat db.sql | mysql -uesp -pesp -Desp
 ```
 
