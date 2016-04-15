@@ -44,3 +44,18 @@ AMQP: The exchange will be asserted as a durable `topic`-exchange.
 
 See `examples/readWriting.js` for a working example (provided mysql and amqp-servers are in
 expected place).
+
+
+API
+---
+
+The same as [event-store-promise](https://github.com/Textalk/event-store-promise).
+
+
+### Known differences / gotchas
+
+**esp.writeEvents()** will throw error if the events can't be written to MySQL, but will not throw
+on AMQP problems, since the events are already written at that point.
+
+**esp.writeEvents()** is not fully idempotent - if you try to write the same event on the same
+eventNumber, it WILL throw an error.
