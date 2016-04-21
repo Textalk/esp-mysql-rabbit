@@ -121,6 +121,23 @@ const mysqlToEvent = row => ({
   updated:     row.updated,
 })
 
+EspPrototype.readAllEventsForward = function(from, params) {
+  const options = Object.assign({}, this.defaults, params)
+  const stream  = new EventStoreStream()
+
+  const query = this.mysqlConn.query(
+    'SELECT * FROM events WHERE globalPosition >= ? ' +
+      'ORDER BY eventNumber LIMIT ?',
+    [from, options.maxCount]
+  )
+  query
+    .on('error', err => stream.emit('error', err))
+    .on('end',   ()  => stream.push(null))
+    .on('result', row => stream.push(mysqlToEvent(row)))
+
+  return stream
+}
+
 EspPrototype.readStreamEventsForward = function(streamId, from, params) {
   const options = Object.assign({}, this.defaults, params)
   const stream  = new EventStoreStream()
@@ -133,7 +150,6 @@ EspPrototype.readStreamEventsForward = function(streamId, from, params) {
   query
     .on('error', err => stream.emit('error', err))
     .on('end',   ()  => stream.push(null))
-    //.on('fields', fields =>
     .on('result', row => stream.push(mysqlToEvent(row)))
 
   return stream
@@ -207,29 +223,36 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
 
     // Lock stream rows.
     .then(() => new Promise((resolve, reject) => this.mysqlConn.query(
-      'SELECT MAX(eventNumber) AS max, UTC_TIMESTAMP(6) AS date '
+      'SELECT '
+        + '  MAX(globalPosition) as globalPosition, '
+        + '  MAX(eventNumber) AS eventNumber, '
+        + '  UTC_TIMESTAMP(6) AS date '
         + 'FROM events WHERE streamId = ? LOCK IN SHARE MODE', [streamId],
       (err, result) => (err ? reject(err) : resolve(result[0]))
     )))
 
     // Format data and insert to MySQL.
     .then(result => {
-      let   max     = result.max
-      const updated = result.date
+      let globalPosition = result.globalPosition
+      let eventNumber    = result.eventNumber
+      const updated      = result.date
 
       if (
-        (expectedVersion === this.ExpectedVersion.NoStream && max !== null)
-          || (expectedVersion >= 0 && max !== expectedVersion)
-      ) throw new Error('Unexpected version')
+        (expectedVersion === this.ExpectedVersion.NoStream && eventNumber !== null)
+          || (expectedVersion >= 0 && eventNumber !== expectedVersion)
+      ) throw new Error('Unexpected version ' + expectedVersion + ' != ' + eventNumber)
 
-      if (max === null) max = -1
+      if (eventNumber    === null) eventNumber    = -1
+      if (globalPosition === null) globalPosition = -1
 
       // Assign eventNumber to all events.
       events.forEach(event => {
-        event.eventNumber = ++max
+        event.globalPosition = ++globalPosition
+        event.eventNumber    = ++eventNumber
       })
 
       const eventsData = events.map(event => [
+        globalPosition,
         streamId,
         event.eventNumber,
         uuid2Binary(event.eventId),
@@ -239,9 +262,11 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
       ])
 
       return Promise.all([
-        eventsData, max,
+        eventsData, eventNumber,
         new Promise((resolve, reject) => this.mysqlConn.query(
-          'INSERT INTO events (streamId, eventNumber, eventId, eventType, updated, data) VALUES ?',
+          'INSERT INTO events '
+            + '(globalPosition, streamId, eventNumber, eventId, eventType, updated, data) '
+            + 'VALUES ?',
           [eventsData],
           (err, result) => (err ? reject(err) : resolve(result))
         ))
@@ -249,8 +274,8 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
     })
 
     // MySQL commit
-    .spread((eventsData, max, ok) => Promise.all([
-      eventsData, max,
+    .spread((eventsData, eventNumber, ok) => Promise.all([
+      eventsData, eventNumber,
       new Promise((resolve, reject) => this.mysqlConn.commit(
         err => (err ? reject(err) : resolve())
       ))
@@ -262,18 +287,18 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
     })
 
     // Create AMQP Channel
-    .spread((eventsData, max, ok) => Promise.all([
-      eventsData, max, this.amqpConn.createChannel()
+    .spread((eventsData, eventNumber, ok) => Promise.all([
+      eventsData, eventNumber, this.amqpConn.createChannel()
     ]))
 
     // Assert events Exchanage
-    .spread((eventsData, max, channel) => Promise.all([
-      eventsData, max, channel,
+    .spread((eventsData, eventNumber, channel) => Promise.all([
+      eventsData, eventNumber, channel,
       channel.assertExchange(this.options.amqp.exchange, 'topic', {durable: true}),
     ]))
 
     // Publish to AMQP
-    .spread((eventsData, max, channel, ok) => {
+    .spread((eventsData, eventNumber, channel, ok) => {
       const published = events.map(event => channel.publish(
         this.options.amqp.exchange, streamId, new Buffer(JSON.stringify(event))
       ))
@@ -284,7 +309,7 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
       return {
         result:           0,
         firstEventNumber: eventsData[0].eventNumber,
-        lastEventNumber:  max,
+        lastEventNumber:  eventNumber,
         publishedOk:      publishedOk,
       }
     })

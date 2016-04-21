@@ -181,6 +181,37 @@ describe('esp mysql rabbit', () => {
     }))
   })
 
+  describe('esp.readAllEventsForward()', () => {
+    it('should get all already stored events', aasync(() => {
+      const mysqlQuery = sinon.stub()
+      const queryStream = new Stream
+      mysqlQuery.returns(queryStream)
+
+      const esp = aawait(Esp({
+        mysql:    {},
+        amqp:     {exchange: 'events'},
+        mysqlLib: {createConnection: options => ({
+          connect: cb => cb(),
+          query:   mysqlQuery,
+        })},
+        amqpLib:  {connect: options => Promise.resolve()},
+      }))
+
+      const stream = esp.readAllEventsForward(0, {})
+      process.nextTick(() => {
+        queryStream.emit('result', {eventNumber: 5, streamId: 'foo'})
+        queryStream.emit('result', {eventNumber: 2, streamId: 'bar'})
+        queryStream.emit('result', {eventNumber: 8, streamId: 'baz'})
+        queryStream.emit('end')
+      })
+      const events = await_(_(stream))
+
+      assert.equal(events[0].streamId, 'foo')
+      assert.equal(events[1].streamId, 'bar')
+      assert.equal(events[2].streamId, 'baz')
+    }))
+  })
+
   describe('esp.readStreamEventsForward()', () => {
     it('should get all already stored events when starting at 0', aasync(() => {
       let mysqlValues = null
@@ -389,8 +420,12 @@ describe('esp mysql rabbit', () => {
             const sql = query.replace(/\?/g, () => JSON.stringify(values.shift()))
             mysqlCalls.push(sql)
 
-            if (sql.match(/^SELECT MAX/)) {
-              return cb(null, [{max: null, date: '2016-04-14 14:35:17.402727'}])
+            if (sql.match(/^SELECT.*MAX/)) {
+              return cb(null, [{
+                globalPostion: null,
+                eventNumber: null,
+                date: '2016-04-14 14:35:17.402727'
+              }])
             }
             cb(null, 'foo')
           }
@@ -424,7 +459,7 @@ describe('esp mysql rabbit', () => {
       assert(amqpPublished[0].content instanceof Buffer)
     }))
 
-    it('should handle existing event max 0', aasync(() => {
+    it('should handle existing event eventNumber 0', aasync(() => {
       const esp = aawait(Esp({
         mysql:    {},
         amqp:     {exchange: 'events'},
@@ -436,8 +471,12 @@ describe('esp mysql rabbit', () => {
           query:   (query, values, cb) => {
             const sql = query.replace(/\?/g, () => JSON.stringify(values.shift()))
 
-            if (sql.match(/^SELECT MAX/)) {
-              return cb(null, [{max: 0, date: '2016-04-14 14:35:17.402727'}])
+            if (sql.match(/^SELECT.*MAX/)) {
+              return cb(null, [{
+                globalPosition: 42,
+                eventNumber: 0,
+                date: '2016-04-14 14:35:17.402727'
+              }])
             }
             cb(null, 'foo')
           }
@@ -460,7 +499,7 @@ describe('esp mysql rabbit', () => {
     }))
   })
 
-  describe('Some contants…', () => {
+  describe('Some constants…', () => {
     it('should have ExpectedVersion', aasync(() => {
       const esp = aawait(Esp({
         mysql:    {},

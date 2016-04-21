@@ -1,6 +1,6 @@
 {
   "name": "esp-mysql-rabbit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Event Store Promises using MySQL and Rabbit as eventstore",
   "main": "esp.js",
   "scripts": {
