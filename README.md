@@ -62,3 +62,5 @@ on AMQP problems, since the events are already written at that point.
 
 **esp.writeEvents()** is not fully idempotent - if you try to write the same event on the same
 eventNumber, it WILL throw an error.
+
+**esp.readAllEventsForward()** is implemented.

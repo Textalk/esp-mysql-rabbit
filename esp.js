@@ -127,12 +127,12 @@ EspPrototype.readAllEventsForward = function(from, params) {
 
   const query = this.mysqlConn.query(
     'SELECT * FROM events WHERE globalPosition >= ? ' +
-      'ORDER BY eventNumber LIMIT ?',
+      'ORDER BY globalPosition LIMIT ?',
     [from, options.maxCount]
   )
   query
-    .on('error', err => stream.emit('error', err))
-    .on('end',   ()  => stream.push(null))
+    .on('error',  err => stream.emit('error', err))
+    .on('end',    ()  => stream.push(null))
     .on('result', row => stream.push(mysqlToEvent(row)))
 
   return stream
@@ -148,8 +148,8 @@ EspPrototype.readStreamEventsForward = function(streamId, from, params) {
     [streamId, from, options.maxCount]
   )
   query
-    .on('error', err => stream.emit('error', err))
-    .on('end',   ()  => stream.push(null))
+    .on('error',  err => stream.emit('error', err))
+    .on('end',    ()  => stream.push(null))
     .on('result', row => stream.push(mysqlToEvent(row)))
 
   return stream
