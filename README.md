@@ -1,6 +1,9 @@
 Event Store Promises using MySQL and RabbitMQ
 =============================================
 
+[![Build Status](https://travis-ci.org/Textalk/esp-mysql-rabbit.png?branch=master)](https://travis-ci.org/Textalk/esp-mysql-rabbit)
+[![Coverage Status](https://coveralls.io/repos/Textalk/esp-mysql-rabbit/badge.png?branch=master)](https://coveralls.io/r/Textalk/esp-mysql-rabbit)
+
 Aiming to be a drop in replacement (or pre-placement, for careful sysops not wanting to add
 [Event Store](https://geteventstore.com/) to the stack yet) of
 [event-store-promise](https://github.com/Textalk/event-store-promise).  It should keep true to the
@@ -13,7 +16,7 @@ Using it in your project
 Install:
 
 ```bash
-npm install --save @textalk/esp-mysql-rabbit
+npm install --save esp-mysql-rabbit
 cat db.sql | mysql -uesp -pesp -Desp
 ```
 
