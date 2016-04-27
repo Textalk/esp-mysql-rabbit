@@ -48,6 +48,8 @@ const Esp = (options, defaults) => {
       esp.mysqlConn = mysqlConn
       esp.amqpConn  = amqpConn
 
+      esp.mysqlConn.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ').done()
+
       /// @todo Catch unexpected close and errors.
       // var dom = domain.create();
       // dom.on('error', gracefullyRestart);
@@ -261,19 +263,24 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
     )))
 
     // Lock stream rows.
-    .then(() => new Promise((resolve, reject) => this.mysqlConn.query(
-      'SELECT '
-        + '  MAX(globalPosition) as globalPosition, '
-        + '  MAX(eventNumber) AS eventNumber, '
-        + '  UTC_TIMESTAMP(6) AS date '
-        + 'FROM events WHERE streamId = ? LOCK IN SHARE MODE', [streamId],
-      (err, result) => (err ? reject(err) : resolve(result[0]))
-    )))
+    .then(() => Promise.all([
+      new Promise((resolve, reject) => this.mysqlConn.query(
+        'SELECT '
+          + '  MAX(globalPosition) as globalPosition, '
+          + '  UTC_TIMESTAMP(6) AS date '
+          + 'FROM events LOCK IN SHARE MODE', [],
+        (err, result) => (err ? reject(err) : resolve(result[0]))
+      )),
+      new Promise((resolve, reject) => this.mysqlConn.query(
+        'SELECT MAX(eventNumber) AS eventNumber '
+          + 'FROM events WHERE streamId = ?', [streamId],
+        (err, result) => (err ? reject(err) : resolve(result[0].eventNumber))
+      )),
+    ]))
 
     // Format data and insert to MySQL.
-    .then(result => {
+    .spread((result, eventNumber) => {
       let globalPosition = result.globalPosition
-      let eventNumber    = result.eventNumber
       const updated      = result.date
 
       if (
