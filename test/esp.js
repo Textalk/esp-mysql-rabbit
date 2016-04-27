@@ -18,7 +18,7 @@ describe('esp mysql rabbit', () => {
         amqp:     {my: 'amqp-options', exchange: 'events'},
         mysqlLib: {createConnection: options => {
           assert.deepEqual(options, {dateStrings: true, my: 'mysql-options'})
-          return {fingerprint: 'my-mysql', connect: (cb) => cb()}
+          return {fingerprint: 'my-mysql', connect: (cb) => cb(), query: () => {}}
         }},
         amqpLib:  {connect: options => Promise.resolve('myAmqpConn')}
       }))
@@ -42,6 +42,7 @@ describe('esp mysql rabbit', () => {
         mysqlLib: {createConnection: options => ({
           connect: cb => cb(),
           end:     mysqlEnd,
+          query:   () => {},
         })},
         amqpLib:  {connect: options => Promise.resolve({close: amqpClose})}
       }))
@@ -58,7 +59,7 @@ describe('esp mysql rabbit', () => {
       const esp = aawait(Esp({
         mysql:    {},
         amqp:     {},
-        mysqlLib: {createConnection: options => ({connect: cb => cb()})},
+        mysqlLib: {createConnection: options => ({connect: cb => cb(), query: () => {}})},
         amqpLib:  {connect: options => Promise.resolve()},
       }))
 
@@ -76,6 +77,7 @@ describe('esp mysql rabbit', () => {
         mysqlLib: {createConnection: options => ({
           connect: cb => cb(),
           ping:    cb => {mysqlPingCount++; cb()},
+          query:   () => {},
         })},
         amqpLib:  {connect: options => Promise.resolve()},
       }))
@@ -95,7 +97,7 @@ describe('esp mysql rabbit', () => {
       const esp = aawait(Esp({
         mysql:    {},
         amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({connect: cb => cb()})},
+        mysqlLib: {createConnection: options => ({connect: cb => cb(), query: () => {}})},
         amqpLib:  {connect: options => Promise.resolve({createChannel: () => Promise.resolve({
           assertExchange: (exchange, type, options) => Promise.resolve(assertExchangeCalled = true),
           assertQueue:    (queue, options)              => Promise.resolve({queue: 'foo'}),
@@ -136,7 +138,7 @@ describe('esp mysql rabbit', () => {
       const esp = aawait(Esp({
         mysql:    {},
         amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({connect: cb => cb()})},
+        mysqlLib: {createConnection: options => ({connect: cb => cb(), query: () => {}})},
         amqpLib:  {connect: options => Promise.resolve({createChannel: () => Promise.resolve({
           assertExchange: (exchange, type, options) => Promise.resolve(),
           assertQueue:    (queue, options)  => Promise.resolve({queue: 'foo'}),
@@ -163,7 +165,7 @@ describe('esp mysql rabbit', () => {
       const esp = aawait(Esp({
         mysql:    {},
         amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({connect: cb => cb()})},
+        mysqlLib: {createConnection: options => ({connect: cb => cb(), query: () => {}})},
         amqpLib:  {connect: options => Promise.resolve({createChannel: () => Promise.resolve({
           assertExchange: (exchange, type, options)  => Promise.resolve(),
           assertQueue:    (queue, options)           => Promise.resolve({queue: 'foo'}),
@@ -315,9 +317,9 @@ describe('esp mysql rabbit', () => {
       const events = await_(_(stream))
 
       // Note that the regex ?-replacement doesn't escape values.
-      assert(mysqlCalls[0].match(/streamId = mystream/), 'should select from mystream')
-      assert(mysqlCalls[1].match(/eventNumber >= 5/))
-      assert(mysqlCalls[1].match(/LIMIT 1/))
+      assert(mysqlCalls[1].match(/streamId = mystream/), 'should select from mystream')
+      assert(mysqlCalls[2].match(/eventNumber >= 5/))
+      assert(mysqlCalls[2].match(/LIMIT 1/))
       assert.equal(events.length, 1)
     }))
 
@@ -489,8 +491,8 @@ describe('esp mysql rabbit', () => {
 
       assert.equal(written.result, 0)
       assert.equal(written.lastEventNumber, 1)
-      assert(mysqlCalls[1].indexOf('2016-04-14 14:35:17.402727') > 0)
-      assert(mysqlCalls[1].indexOf('{\\"baz\\":\\"qux\\"}') > 0)
+      assert(mysqlCalls[3].indexOf('2016-04-14 14:35:17.402727') > 0)
+      assert(mysqlCalls[3].indexOf('{\\"baz\\":\\"qux\\"}') > 0)
       assert.equal(amqpPublished.length, 2)
       assert(exchangeAsserted, 'Exchange must be asserted')
       assert(amqpPublished[0].content instanceof Buffer)
@@ -541,7 +543,7 @@ describe('esp mysql rabbit', () => {
       const esp = aawait(Esp({
         mysql:    {},
         amqp:     {},
-        mysqlLib: {createConnection: options => ({connect: cb => cb()})},
+        mysqlLib: {createConnection: options => ({connect: cb => cb(), query: () => {}})},
         amqpLib:  {connect: options => Promise.resolve()}
       }))
 

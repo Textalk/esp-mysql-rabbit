@@ -48,7 +48,7 @@ const Esp = (options, defaults) => {
       esp.mysqlConn = mysqlConn
       esp.amqpConn  = amqpConn
 
-      esp.mysqlConn.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ').done()
+      esp.mysqlConn.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ', [], () => {})
 
       /// @todo Catch unexpected close and errors.
       // var dom = domain.create();
