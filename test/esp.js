@@ -247,6 +247,43 @@ describe('esp mysql rabbit', () => {
     }))
   })
 
+  describe('esp.subscribeToAllFrom()', () => {
+    it('should get existing events', (done) => {
+      const esp = Object.create(Esp.EspPrototype)
+      esp.readAllEventsForward = () => {
+        const stream = new Stream
+        process.nextTick(() => {stream.emit('data', {eventType: 'myTestEvent'})})
+        return stream
+      }
+      esp.subscribeToStream = sinon.stub().returns(new Stream.Readable)
+
+      const stream = esp.subscribeToAllFrom(0)
+      stream.on('data', event => {
+        assert(esp.subscribeToStream.calledWith('$all'))
+        assert.equal(event.eventType, 'myTestEvent')
+        done()
+      })
+    })
+
+    it('should emit `headOfStream` when going from read to subscribe', aasync(() => {
+      const esp = Object.create(Esp.EspPrototype)
+      esp.readAllEventsForward = () => {
+        const stream = new Stream
+        process.nextTick(() => {stream.emit('data', {eventType: 'myTestEvent'})})
+        return stream
+      }
+      esp.subscribeToStream = sinon.stub().returns(new Stream.Readable)
+
+      const stream = esp.subscribeToAllFrom(0)
+      stream.on('data', event => {
+
+        assert(esp.subscribeToStream.calledWith('$all'))
+        assert.equal(event.eventType, 'myTestEvent')
+
+      })
+    }))
+  })
+
   describe('esp.readStreamEventsUntil()', () => {
     it('should return only wanted events', aasync(() => {
       const mysqlCalls = []

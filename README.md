@@ -64,3 +64,5 @@ on AMQP problems, since the events are already written at that point.
 eventNumber, it WILL throw an error.
 
 **esp.readAllEventsForward()** is implemented.
+
+**esp.subscribeToAllFrom()** is implemented.
