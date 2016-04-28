@@ -299,7 +299,7 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
       })
 
       const eventsData = events.map(event => [
-        globalPosition,
+        event.globalPosition,
         streamId,
         event.eventNumber,
         uuid2Binary(event.eventId),
@@ -309,7 +309,7 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
       ])
 
       return Promise.all([
-        eventsData, eventNumber,
+        eventNumber,
         new Promise((resolve, reject) => this.mysqlConn.query(
           'INSERT INTO events '
             + '(globalPosition, streamId, eventNumber, eventId, eventType, updated, data) '
@@ -321,8 +321,8 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
     })
 
     // MySQL commit
-    .spread((eventsData, eventNumber, ok) => Promise.all([
-      eventsData, eventNumber,
+    .spread((lastEventNumber, ok) => Promise.all([
+      lastEventNumber,
       new Promise((resolve, reject) => this.mysqlConn.commit(
         err => (err ? reject(err) : resolve())
       ))
@@ -334,18 +334,18 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
     })
 
     // Create AMQP Channel
-    .spread((eventsData, eventNumber, ok) => Promise.all([
-      eventsData, eventNumber, this.amqpConn.createChannel()
+    .spread((lastEventNumber, ok) => Promise.all([
+      lastEventNumber, this.amqpConn.createChannel()
     ]))
 
     // Assert events Exchanage
-    .spread((eventsData, eventNumber, channel) => Promise.all([
-      eventsData, eventNumber, channel,
+    .spread((lastEventNumber, channel) => Promise.all([
+      lastEventNumber, channel,
       channel.assertExchange(this.options.amqp.exchange, 'topic', {durable: true}),
     ]))
 
     // Publish to AMQP
-    .spread((eventsData, eventNumber, channel, ok) => {
+    .spread((lastEventNumber, channel, ok) => {
       const published = events.map(event => channel.publish(
         this.options.amqp.exchange, streamId, new Buffer(JSON.stringify(event))
       ))
@@ -355,8 +355,8 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
 
       return {
         result:           0,
-        firstEventNumber: eventsData[0].eventNumber,
-        lastEventNumber:  eventNumber,
+        firstEventNumber: events[0].eventNumber,
+        lastEventNumber:  lastEventNumber,
         publishedOk:      publishedOk,
       }
     })

@@ -465,9 +465,9 @@ describe('esp mysql rabbit', () => {
 
             if (sql.match(/^SELECT.*MAX/)) {
               return cb(null, [{
-                globalPostion: null,
-                eventNumber: null,
-                date: '2016-04-14 14:35:17.402727'
+                globalPosition: null,
+                eventNumber:    null,
+                date:           '2016-04-14 14:35:17.402727'
               }])
             }
             cb(null, 'foo')
@@ -494,12 +494,15 @@ describe('esp mysql rabbit', () => {
       ]))
 
       assert.equal(written.result, 0)
+      assert.equal(written.firstEventNumber, 0)
       assert.equal(written.lastEventNumber, 1)
       assert(mysqlCalls[3].indexOf('2016-04-14 14:35:17.402727') > 0)
       assert(mysqlCalls[3].indexOf('{\\"baz\\":\\"qux\\"}') > 0)
       assert.equal(amqpPublished.length, 2)
       assert(exchangeAsserted, 'Exchange must be asserted')
       assert(amqpPublished[0].content instanceof Buffer)
+      assert.equal(JSON.parse(amqpPublished[0].content).globalPosition, 0)
+      assert.equal(JSON.parse(amqpPublished[1].content).globalPosition, 1)
     }))
 
     it('should handle existing event eventNumber 0', aasync(() => {
