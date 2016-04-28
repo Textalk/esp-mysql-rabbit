@@ -114,7 +114,7 @@ EspPrototype.subscribeToStream = function(streamId, params) {
 }
 
 const mysqlToEvent = row => ({
-  eventId:     row.eventId,    // todo Convert to string from varbin uuid
+  eventId:     row.eventId ? uuid.unparse(row.eventId) : '',
   eventType:   row.eventType,
   eventNumber: row.eventNumber,
   data:        row.data ? JSON.parse(row.data) : null,

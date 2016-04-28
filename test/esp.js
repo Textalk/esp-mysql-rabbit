@@ -4,6 +4,7 @@ const Stream  = require('stream')
 const assert  = require('assert')
 const aawait  = require('asyncawait/await')
 const aasync  = require('asyncawait/async')
+const uuid    = require('uuid')
 const sinon   = require('sinon')
 const Esp     = require('../esp')
 const _       = require('highland')
@@ -185,8 +186,10 @@ describe('esp mysql rabbit', () => {
 
   describe('esp.readAllEventsForward()', () => {
     it('should get all already stored events', aasync(() => {
-      const mysqlQuery = sinon.stub()
-      const queryStream = new Stream
+      const myUuidBuffer = new Buffer(32)
+      const myUuid       = uuid.v4({}, myUuidBuffer)
+      const mysqlQuery   = sinon.stub()
+      const queryStream  = new Stream
       mysqlQuery.returns(queryStream)
 
       const esp = aawait(Esp({
@@ -201,13 +204,14 @@ describe('esp mysql rabbit', () => {
 
       const stream = esp.readAllEventsForward(0, {})
       process.nextTick(() => {
-        queryStream.emit('result', {eventNumber: 5, streamId: 'foo'})
-        queryStream.emit('result', {eventNumber: 2, streamId: 'bar'})
-        queryStream.emit('result', {eventNumber: 8, streamId: 'baz'})
+        queryStream.emit('result', {eventId: myUuid, eventNumber: 5, streamId: 'foo'})
+        queryStream.emit('result', {eventId: myUuid, eventNumber: 2, streamId: 'bar'})
+        queryStream.emit('result', {eventId: myUuid, eventNumber: 8, streamId: 'baz'})
         queryStream.emit('end')
       })
       const events = await_(_(stream))
 
+      assert.equal(events[0].eventId, uuid.unparse(myUuid))
       assert.equal(events[0].streamId, 'foo')
       assert.equal(events[1].streamId, 'bar')
       assert.equal(events[2].streamId, 'baz')
