@@ -269,7 +269,7 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
         'SELECT '
           + '  MAX(globalPosition) as globalPosition, '
           + '  UTC_TIMESTAMP(6) AS date '
-          + 'FROM events LOCK IN SHARE MODE', [],
+          + 'FROM events FOR UPDATE', [],
         (err, result) => (err ? reject(err) : resolve(result[0]))
       )),
       new Promise((resolve, reject) => this.mysqlConn.query(
