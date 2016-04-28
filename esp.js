@@ -114,13 +114,14 @@ EspPrototype.subscribeToStream = function(streamId, params) {
 }
 
 const mysqlToEvent = row => ({
-  eventId:     row.eventId ? uuid.unparse(row.eventId) : '',
-  eventType:   row.eventType,
-  eventNumber: row.eventNumber,
-  data:        row.data ? JSON.parse(row.data) : null,
-  streamId:    row.streamId,
+  globalPosition: row.globalPosition,
+  eventId:        row.eventId ? uuid.unparse(row.eventId) : '',
+  eventType:      row.eventType,
+  eventNumber:    row.eventNumber,
+  data:           row.data ? JSON.parse(row.data) : null,
+  streamId:       row.streamId,
   // EventStore uses a lot of meta fields, isJson, isMetaData, author etc…
-  updated:     row.updated,
+  updated:        row.updated,
 })
 
 EspPrototype.readAllEventsForward = function(from, params) {
@@ -168,25 +169,25 @@ EspPrototype.subscribeToAllFrom = function(position, params) {
       subStream.pause()
       stream.close = subStream.close
 
-      let lastEventNumber = -1
+      let globalPosition = -1
       return Promise.all([
         subStream,
         new Promise((resolve, reject) => this.readAllEventsForward(position, options)
           .on('error', err   => reject(err))
-          .on('end',   ()    => resolve(lastEventNumber))
+          .on('end',   ()    => resolve(globalPosition))
           .on('data',  event => {
             stream.push(event)
-            lastEventNumber = event.eventNumber
+            globalPosition = event.globalPosition
           })
         )
       ])
     })
     .then(result => {
-      const subStream       = result[0]
-      const lastEventNumber = result[1]
+      const subStream      = result[0]
+      const globalPosition = result[1]
 
       subStream.on('data', event => {
-        if (event.eventNumber > lastEventNumber) stream.push(event)
+        if (event.globalPosition > globalPosition) stream.push(event)
       })
       subStream.on('end', () => end())
       subStream.resume()
