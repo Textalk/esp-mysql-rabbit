@@ -265,7 +265,7 @@ describe('esp mysql rabbit', () => {
 
       const stream = esp.subscribeToAllFrom(0)
       stream.on('data', event => {
-        assert(esp.subscribeToStream.calledWith('$all'))
+        assert(esp.subscribeToStream.calledWith('#'))
         assert.equal(event.eventType, 'myTestEvent')
         done()
       })
