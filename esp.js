@@ -163,7 +163,7 @@ EspPrototype.subscribeToAllFrom = function(position, params) {
 
   Promise.resolve()
     .then(() => {
-      const subStream = this.subscribeToStream('$all')
+      const subStream = this.subscribeToStream('#')
       subStream.on('error', err => stream.emit('error', err))
       subStream.pause()
       stream.close = subStream.close
