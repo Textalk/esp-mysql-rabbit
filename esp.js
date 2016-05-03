@@ -129,15 +129,19 @@ EspPrototype.readAllEventsForward = function(from, params) {
   const options = Object.assign({}, this.defaults, params)
   const stream  = new EventStoreStream()
 
-  const query = this.mysqlPool.query(
-    'SELECT * FROM events WHERE globalPosition >= ? ' +
-      'ORDER BY globalPosition LIMIT ?',
-    [from, options.maxCount]
-  )
-  query
-    .on('error',  err => stream.emit('error', err))
-    .on('end',    ()  => stream.push(null))
-    .on('result', row => stream.push(mysqlToEvent(row)))
+  this.mysqlPool.getConnection((err, connection) => {
+    if (err) return stream.emit('error', err)
+
+    const query = connection.query(
+      'SELECT * FROM events WHERE globalPosition >= ? ' +
+        'ORDER BY globalPosition LIMIT ?',
+      [from, options.maxCount]
+    )
+    query
+      .on('error',  err => stream.emit('error', err))
+      .on('end',    ()  => stream.push(null))
+      .on('result', row => stream.push(mysqlToEvent(row)))
+  })
 
   return stream
 }
@@ -146,15 +150,20 @@ EspPrototype.readStreamEventsForward = function(streamId, from, params) {
   const options = Object.assign({}, this.defaults, params)
   const stream  = new EventStoreStream()
 
-  const query = this.mysqlPool.query(
-    'SELECT * FROM events WHERE streamId = ? AND eventNumber >= ? ' +
-      'ORDER BY eventNumber LIMIT ?',
-    [streamId, from, options.maxCount]
-  )
-  query
-    .on('error',  err => stream.emit('error', err))
-    .on('end',    ()  => stream.push(null))
-    .on('result', row => stream.push(mysqlToEvent(row)))
+  this.mysqlPool.getConnection((err, connection) => {
+    if (err) return stream.emit('error', err)
+
+    const query = connection.query(
+      'SELECT * FROM events WHERE streamId = ? AND eventNumber >= ? ' +
+        'ORDER BY eventNumber LIMIT ?',
+      [streamId, from, options.maxCount]
+    )
+    query
+      .on('error',  err => stream.emit('error', err))
+      .on('end',    ()  => stream.push(null))
+      .on('result', row => stream.push(mysqlToEvent(row)))
+    connection.release()
+  })
 
   return stream
 }
@@ -213,10 +222,19 @@ EspPrototype.readStreamEventsUntil = function(streamId, from, to, params) {
 
   Promise.resolve()
     // Check last eventNumber in MySQL.
-    .then(() => new Promise((resolve, reject) => this.mysqlPool.query(
-      'SELECT MAX(eventNumber) AS max FROM events WHERE streamId = ?', [streamId],
-      (err, result, fields) => (err ? reject(err) : resolve(result[0]))
-    )))
+    .then(() => new Promise((resolve, reject) => {
+      this.mysqlPool.getConnection((err, connection) => {
+        if (err) return reject(err)
+        connection.query(
+          'SELECT MAX(eventNumber) AS max FROM events WHERE streamId = ?', [streamId],
+          (err, result, fields) => {
+            connection.release()
+            if (err) return reject(err)
+            resolve(result[0])
+          }
+        )
+      })
+    }))
     .then(result => {
       const max = result.max
       const subStream = (max >= to) ? null
@@ -245,7 +263,7 @@ EspPrototype.readStreamEventsUntil = function(streamId, from, to, params) {
       subStream.on('data', event => {
         if (event.eventNumber > lastEventNumber) stream.push(event)
       })
-      subStream.on('end', ()     => end())
+      subStream.on('end', () => end())
       subStream.resume()
     })
     .catch(err => stream.emit('error', err))
@@ -266,13 +284,17 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
       (err, connection) => (err ? reject(err) : resolve(connection))
     )))
 
+    // Start transaction.
     .then(connection => {
       mysqlConn = connection
 
-      // Start transaction.
-      return new Promise((resolve, reject) => mysqlConn.beginTransaction(
-        err => (err ? reject(err) : resolve())
-      ))
+      return new Promise((resolve, reject) => {
+        connection.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ', [], (err) => {
+          if (err) return reject(err)
+
+          mysqlConn.beginTransaction(err => (err ? reject(err) : resolve()))
+        })
+      })
     })
 
     // Lock stream rows.
