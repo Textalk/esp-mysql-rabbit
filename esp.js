@@ -24,8 +24,8 @@ const Esp = (options, defaults) => {
   const esp = Object.create(EspPrototype)
 
   // Allow switching of mysql-lib (for chosing mysql or mysql2, or mocking).
-  esp.mysqlLib = options.mysqlLib || mysql
-  esp.amqpLib  = options.amqpLib  || amqp
+  const mysqlLib = options.mysqlLib || mysql
+  const amqpLib  = options.amqpLib  || amqp
 
   esp.options  = options
   esp.defaults = Object.assign({}, defaultDefaults, defaults)
@@ -34,21 +34,22 @@ const Esp = (options, defaults) => {
     // Connect to MySQL and Amqp
     .then(() => {
       const mysqlOptions = Object.assign({}, {dateStrings: true}, options.mysql)
-      const mysqlConn    = esp.mysqlLib.createConnection(mysqlOptions)
+      esp.mysqlPool = mysqlLib.createPool(mysqlOptions)
 
       // Explicitly connect, to find out any connection errors directly.
       return Promise.all([
-        new Promise((resolve, reject) => mysqlConn.connect(
-          err => (err ? reject(err) : resolve(mysqlConn))
+        new Promise((resolve, reject) => esp.mysqlPool.getConnection(
+          (err, conn) => (err ? reject(err) : resolve(conn))
         )),
-        esp.amqpLib.connect(options.amqp.url),
+        amqpLib.connect(options.amqp.url),
       ])
     })
     .spread((mysqlConn, amqpConn) => {
-      esp.mysqlConn = mysqlConn
+      // We don't need mysqlConn, it's just to try out connection parameters.
+      mysqlConn.release()
       esp.amqpConn  = amqpConn
 
-      esp.mysqlConn.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ', [], () => {})
+      //esp.mysqlConn.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ', [], () => {})
 
       /// @todo Catch unexpected close and errors.
       // var dom = domain.create();
@@ -62,7 +63,7 @@ const Esp = (options, defaults) => {
 EspPrototype.close = function() {
   return Promise.all([
     new Promise(
-      (resolve, reject) => this.mysqlConn.end(err => (err ? reject(err) : resolve()))
+      (resolve, reject) => this.mysqlPool.end(err => (err ? reject(err) : resolve()))
     ),
     this.amqpConn.close()
   ])
@@ -73,7 +74,7 @@ EspPrototype.createGuid = uuid.v4
 EspPrototype.ping = function() {
   // Will only ping MySQL now.
   return new Promise(
-    (resolve, reject) => this.mysqlConn.ping(err => (err ? reject(err) : resolve()))
+    (resolve, reject) => this.mysqlPool.ping(err => (err ? reject(err) : resolve()))
   )
 }
 
@@ -128,7 +129,7 @@ EspPrototype.readAllEventsForward = function(from, params) {
   const options = Object.assign({}, this.defaults, params)
   const stream  = new EventStoreStream()
 
-  const query = this.mysqlConn.query(
+  const query = this.mysqlPool.query(
     'SELECT * FROM events WHERE globalPosition >= ? ' +
       'ORDER BY globalPosition LIMIT ?',
     [from, options.maxCount]
@@ -145,7 +146,7 @@ EspPrototype.readStreamEventsForward = function(streamId, from, params) {
   const options = Object.assign({}, this.defaults, params)
   const stream  = new EventStoreStream()
 
-  const query = this.mysqlConn.query(
+  const query = this.mysqlPool.query(
     'SELECT * FROM events WHERE streamId = ? AND eventNumber >= ? ' +
       'ORDER BY eventNumber LIMIT ?',
     [streamId, from, options.maxCount]
@@ -212,7 +213,7 @@ EspPrototype.readStreamEventsUntil = function(streamId, from, to, params) {
 
   Promise.resolve()
     // Check last eventNumber in MySQL.
-    .then(() => new Promise((resolve, reject) => this.mysqlConn.query(
+    .then(() => new Promise((resolve, reject) => this.mysqlPool.query(
       'SELECT MAX(eventNumber) AS max FROM events WHERE streamId = ?', [streamId],
       (err, result, fields) => (err ? reject(err) : resolve(result[0]))
     )))
@@ -257,22 +258,33 @@ const uuid2Binary = uuid => {
 }
 
 EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, events) {
+  let mysqlConn = null // We need to have the connection even for errors.
+
   return Promise.resolve()
-    // Start transaction.
-    .then(() => new Promise((resolve, reject) => this.mysqlConn.beginTransaction(
-      err => (err ? reject(err) : resolve())
+    // Get specific connection from pool.
+    .then(() => new Promise((resolve, reject) => this.mysqlPool.getConnection(
+      (err, connection) => (err ? reject(err) : resolve(connection))
     )))
+
+    .then(connection => {
+      mysqlConn = connection
+
+      // Start transaction.
+      return new Promise((resolve, reject) => mysqlConn.beginTransaction(
+        err => (err ? reject(err) : resolve())
+      ))
+    })
 
     // Lock stream rows.
     .then(() => Promise.all([
-      new Promise((resolve, reject) => this.mysqlConn.query(
+      new Promise((resolve, reject) => mysqlConn.query(
         'SELECT '
           + '  MAX(globalPosition) as globalPosition, '
           + '  UTC_TIMESTAMP(6) AS date '
           + 'FROM events FOR UPDATE', [],
         (err, result) => (err ? reject(err) : resolve(result[0]))
       )),
-      new Promise((resolve, reject) => this.mysqlConn.query(
+      new Promise((resolve, reject) => mysqlConn.query(
         'SELECT MAX(eventNumber) AS eventNumber '
           + 'FROM events WHERE streamId = ?', [streamId],
         (err, result) => (err ? reject(err) : resolve(result[0].eventNumber))
@@ -310,7 +322,7 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
 
       return Promise.all([
         eventNumber,
-        new Promise((resolve, reject) => this.mysqlConn.query(
+        new Promise((resolve, reject) => mysqlConn.query(
           'INSERT INTO events '
             + '(globalPosition, streamId, eventNumber, eventId, eventType, updated, data) '
             + 'VALUES ?',
@@ -320,18 +332,25 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
       ])
     })
 
-    // MySQL commit
+    // MySQL commit.
     .spread((lastEventNumber, ok) => Promise.all([
       lastEventNumber,
-      new Promise((resolve, reject) => this.mysqlConn.commit(
-        err => (err ? reject(err) : resolve())
+      new Promise((resolve, reject) => mysqlConn.commit(
+        err => {
+          if (err) return reject(err)
+          mysqlConn.release()
+          mysqlConn = null
+          resolve()
+        }
       ))
     ]))
 
-    // Catch MySQL problems to rollback and throw
-    .catch(err => {
-      return new Promise((resolve, reject) => this.mysqlConn.rollback(() => reject(err)))
-    })
+    // Catch MySQL problems to rollback and throw.
+    .catch(err => new Promise((resolve, reject) => mysqlConn.rollback(() => {
+      mysqlConn.release()
+      mysqlConn = null
+      reject(err)
+    })))
 
     // Create AMQP Channel
     .spread((lastEventNumber, ok) => Promise.all([

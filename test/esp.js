@@ -17,52 +17,43 @@ describe('esp mysql rabbit', () => {
       const esp = aawait(Esp({
         mysql:    {my: 'mysql-options'},
         amqp:     {my: 'amqp-options', exchange: 'events'},
-        mysqlLib: {createConnection: options => {
-          assert.deepEqual(options, {dateStrings: true, my: 'mysql-options'})
-          return {fingerprint: 'my-mysql', connect: (cb) => cb(), query: () => {}}
-        }},
+        mysqlLib: {createPool: options => ({
+          getConnection: cb => {
+            assert.deepEqual(options, {dateStrings: true, my: 'mysql-options'})
+            return cb(null, {release: () => {}})
+          },
+          fingerprint: 'my-mysql',
+        })},
         amqpLib:  {connect: options => Promise.resolve('myAmqpConn')}
       }))
 
-      assert.equal(esp.mysqlConn.fingerprint, 'my-mysql')
+      assert.equal(esp.mysqlPool.fingerprint, 'my-mysql')
       assert.equal(esp.amqpConn, 'myAmqpConn')
     }))
   })
 
   describe('esp.close()', () => {
     it('should close connections', aasync(() => {
-      let mysqlEndCallCount = 0
-      const mysqlEnd = cb => {mysqlEndCallCount++; cb()}
+      const esp = Object.create(Esp.EspPrototype)
+
+      const mysqlPoolEnd = sinon.stub()
+      mysqlPoolEnd.callsArg(0)
+      esp.mysqlPool = {end: mysqlPoolEnd}
 
       const amqpClose = sinon.stub()
       amqpClose.returns(Promise.resolve());
-
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({
-          connect: cb => cb(),
-          end:     mysqlEnd,
-          query:   () => {},
-        })},
-        amqpLib:  {connect: options => Promise.resolve({close: amqpClose})}
-      }))
+      esp.amqpConn = {close: amqpClose}
 
       aawait(esp.close())
 
-      assert.equal(mysqlEndCallCount, 1)
-      assert.equal(amqpClose.callCount, 1)
+      assert(mysqlPoolEnd.calledOnce)
+      assert(amqpClose.calledOnce)
     }))
   })
 
   describe('esp.createGuid()', () => {
     it('should give a string', aasync(() => {
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {},
-        mysqlLib: {createConnection: options => ({connect: cb => cb(), query: () => {}})},
-        amqpLib:  {connect: options => Promise.resolve()},
-      }))
+      const esp = Object.create(Esp.EspPrototype)
 
       assert.equal(typeof esp.createGuid(), 'string')
     }))
@@ -70,41 +61,34 @@ describe('esp mysql rabbit', () => {
 
   describe('esp.ping()', () => {
     it('should promise a pong', aasync(() => {
-      let mysqlPingCount = 0
+      const esp = Object.create(Esp.EspPrototype)
 
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({
-          connect: cb => cb(),
-          ping:    cb => {mysqlPingCount++; cb()},
-          query:   () => {},
-        })},
-        amqpLib:  {connect: options => Promise.resolve()},
-      }))
+      const mysqlPing = sinon.stub()
+      mysqlPing.callsArg(0)
+      esp.mysqlPool = {ping: mysqlPing}
 
       aawait(esp.ping())
 
-      assert.equal(mysqlPingCount, 1)
+      assert(mysqlPing.calledOnce)
     }))
   })
 
   describe('esp.subscribeToStream()', () => {
     it('should get new events when subscribed', aasync(() => {
-      let consumeQueue         = null
-      let assertExchangeCalled = false
-      let usedRoutingKey       = null
+      const esp = Object.create(Esp.EspPrototype)
 
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({connect: cb => cb(), query: () => {}})},
-        amqpLib:  {connect: options => Promise.resolve({createChannel: () => Promise.resolve({
-          assertExchange: (exchange, type, options) => Promise.resolve(assertExchangeCalled = true),
-          assertQueue:    (queue, options)              => Promise.resolve({queue: 'foo'}),
-          bindQueue:      (queue, exchange, routingKey) => Promise.resolve(
-            usedRoutingKey = routingKey
-          ),
+      esp.options = {amqp: {exchange: 'fooEvents'}}
+
+      const assertExchange = sinon.stub().returns(Promise.resolve())
+      const assertQueue = sinon.stub().returns(Promise.resolve({queue: 'foo'}))
+      const bindQueue = sinon.stub().returns(Promise.resolve())
+      let consumeQueue = null
+
+      esp.amqpConn = {
+        createChannel: () => Promise.resolve({
+          assertExchange: assertExchange,
+          assertQueue:    assertQueue,
+          bindQueue:      bindQueue,
           consume:        (queue, cb, options)          => {
             consumeQueue = queue
             process.nextTick(() => cb({
@@ -117,43 +101,42 @@ describe('esp mysql rabbit', () => {
             }))
             return Promise.resolve()
           }
-        })})}
-      }))
+        })
+      }
 
       const event = aawait(new Promise((resolve, reject) => {
         const stream = esp.subscribeToStream('mystream')
         stream.on('data', event => resolve(event))
       }))
 
-      assert(assertExchangeCalled)
-      assert.equal(consumeQueue,    'foo')
-      assert.equal(usedRoutingKey,  'mystream')
+      assert(assertExchange.calledOnce)
+      assert(assertExchange.calledWith('fooEvents', 'topic', {durable: true}))
+      assert(assertQueue.calledOnce)
+      assert(bindQueue.calledWith('foo', 'fooEvents', 'mystream'))
       assert.equal(event.streamId,  'mystream')
       assert.equal(event.eventType, 'myEventType')
       assert.deepEqual(event.data,  {my: 'eventdata'}, 'Event data should be parsed')
     }))
 
     it('should close on maxCount', aasync(() => {
+      const esp = Object.create(Esp.EspPrototype)
+      esp.options = {amqp: {exchange: 'fooEvents'}}
+
       let closeCalled = false
 
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({connect: cb => cb(), query: () => {}})},
-        amqpLib:  {connect: options => Promise.resolve({createChannel: () => Promise.resolve({
-          assertExchange: (exchange, type, options) => Promise.resolve(),
-          assertQueue:    (queue, options)  => Promise.resolve({queue: 'foo'}),
-          bindQueue:      (queue, exchange) => Promise.resolve(),
-          consume:        (queue, cb, options)  => {
-            return Promise.resolve()
-              .then(() => {if (!closeCalled) cb({content: new Buffer(JSON.stringify({}))})})
-              .then(() => {if (!closeCalled) cb({content: new Buffer(JSON.stringify({}))})})
-              .then(() => {if (!closeCalled) cb({content: new Buffer(JSON.stringify({}))})})
-              .then(() => {if (!closeCalled) cb({content: new Buffer(JSON.stringify({}))})})
-          },
+      esp.amqpConn = {
+        createChannel: () => Promise.resolve({
+          assertExchange: () => Promise.resolve(),
+          assertQueue:    () => Promise.resolve({queue: 'foo'}),
+          bindQueue:      () => Promise.resolve(),
+          consume:        (queue, cb, options) => Promise.resolve()
+            .then(() => {if (!closeCalled) cb({content: new Buffer(JSON.stringify({}))})})
+            .then(() => {if (!closeCalled) cb({content: new Buffer(JSON.stringify({}))})})
+            .then(() => {if (!closeCalled) cb({content: new Buffer(JSON.stringify({}))})})
+            .then(() => {if (!closeCalled) cb({content: new Buffer(JSON.stringify({}))})}),
           close: () => Promise.resolve(closeCalled = true)
-        })})}
-      }))
+        })
+      }
 
       const stream = esp.subscribeToStream('mystream', {maxCount: 2})
       const events = await_(_(stream))
@@ -161,46 +144,39 @@ describe('esp mysql rabbit', () => {
     }))
 
     it('should close channel on subscription stream.close', aasync(() => {
-      let closeCalled = false
+      const esp = Object.create(Esp.EspPrototype)
+      esp.options = {amqp: {exchange: 'fooEvents'}}
 
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({connect: cb => cb(), query: () => {}})},
-        amqpLib:  {connect: options => Promise.resolve({createChannel: () => Promise.resolve({
-          assertExchange: (exchange, type, options)  => Promise.resolve(),
-          assertQueue:    (queue, options)           => Promise.resolve({queue: 'foo'}),
-          bindQueue:      (queue, exchange, pattern) => Promise.resolve(),
-          consume:        (queue, cb, options)       => Promise.resolve(),
-          close:          ()                         => Promise.resolve(closeCalled = true),
-        })})}
-      }))
+      const close = sinon.stub().returns(Promise.resolve())
+
+      esp.amqpConn = {
+        createChannel: () => Promise.resolve({
+          assertExchange: () => Promise.resolve(),
+          assertQueue:    () => Promise.resolve({queue: 'foo'}),
+          bindQueue:      () => Promise.resolve(),
+          consume:        () => Promise.resolve(),
+          close:          close,
+        })
+      }
 
       const stream = esp.subscribeToStream('mystream')
       aawait(new Promise((resolve, reject) => {stream.on('open', () => resolve())}))
       aawait(stream.close())
 
-      assert(closeCalled)
+      assert(close.calledOnce)
     }))
   })
 
   describe('esp.readAllEventsForward()', () => {
     it('should get all already stored events', aasync(() => {
+      const esp = Object.create(Esp.EspPrototype)
+
       const myUuidBuffer = new Buffer(32)
       const myUuid       = uuid.v4({}, myUuidBuffer)
-      const mysqlQuery   = sinon.stub()
       const queryStream  = new Stream
-      mysqlQuery.returns(queryStream)
+      const mysqlQuery   = sinon.stub().returns(queryStream)
 
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({
-          connect: cb => cb(),
-          query:   mysqlQuery,
-        })},
-        amqpLib:  {connect: options => Promise.resolve()},
-      }))
+      esp.mysqlPool = {query: mysqlQuery}
 
       const stream = esp.readAllEventsForward(0, {})
       process.nextTick(() => {
@@ -220,28 +196,24 @@ describe('esp mysql rabbit', () => {
 
   describe('esp.readStreamEventsForward()', () => {
     it('should get all already stored events when starting at 0', aasync(() => {
+      const esp = Object.create(Esp.EspPrototype)
+
       let mysqlValues = null
 
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({
-          connect: cb => cb(),
-          query:   (query, values) => {
-            const stream = new Stream
-            mysqlValues = values
+      esp.mysqlPool = {
+        query:   (query, values) => {
+          const stream = new Stream
+          mysqlValues = values
 
-            process.nextTick(() => {
-              stream.emit('result', {eventNumber: 0})
-              stream.emit('result', {eventNumber: 1})
-              stream.emit('result', {eventNumber: 2})
-              stream.emit('end')
-            })
-            return stream
-          }
-        })},
-        amqpLib:  {connect: options => Promise.resolve()},
-      }))
+          process.nextTick(() => {
+            stream.emit('result', {eventNumber: 0})
+            stream.emit('result', {eventNumber: 1})
+            stream.emit('result', {eventNumber: 2})
+            stream.emit('end')
+          })
+          return stream
+        }
+      }
 
       const stream = esp.readStreamEventsForward('mystream', 0)
       const events = await_(_(stream))
@@ -292,74 +264,68 @@ describe('esp mysql rabbit', () => {
 
   describe('esp.readStreamEventsUntil()', () => {
     it('should return only wanted events', aasync(() => {
+      const esp = Object.create(Esp.EspPrototype)
+
       const mysqlCalls = []
 
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({
-          connect: cb => cb(),
-          query:   (query, values, cb) => {
-            const sql = query.replace(/\?/g, () => values.shift())
-            mysqlCalls.push(sql)
+      esp.mysqlPool = {
+        query:   (query, values, cb) => {
+          const sql = query.replace(/\?/g, () => values.shift())
+          mysqlCalls.push(sql)
 
-            if (sql.match(/^SELECT MAX/)) return cb(null, [{max: 100}], ['MAX'])
+          if (sql.match(/^SELECT MAX/)) return cb(null, [{max: 100}], ['MAX'])
 
-            //if (sql.match(/^SELECT \*/)) {
-            const stream = new Stream
-            process.nextTick(() => {
-              stream.emit('result', {eventNumber: 5})
-              stream.emit('end')
-            })
-            return stream
-          }
-        })},
-        amqpLib:  {connect: options => Promise.resolve()},
-      }))
+          const stream = new Stream
+          process.nextTick(() => {
+            stream.emit('result', {eventNumber: 5})
+            stream.emit('end')
+          })
+          return stream
+        }
+      }
 
       const stream = esp.readStreamEventsUntil('mystream', 5, 5)
       const events = await_(_(stream))
 
       // Note that the regex ?-replacement doesn't escape values.
-      assert(mysqlCalls[1].match(/streamId = mystream/), 'should select from mystream')
-      assert(mysqlCalls[2].match(/eventNumber >= 5/))
-      assert(mysqlCalls[2].match(/LIMIT 1/))
+      assert(mysqlCalls[0].match(/streamId = mystream/), 'should select from mystream')
+      assert(mysqlCalls[1].match(/eventNumber >= 5/))
+      assert(mysqlCalls[1].match(/LIMIT 1/))
       assert.equal(events.length, 1)
     }))
 
-    it('should handle extra event from second mysql read without doubling it', aasync(() => {
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({
-          connect: cb => cb(),
-          query:   (query, values, cb) => {
-            const sql = query.replace(/\?/g, () => values.shift())
-            if (sql.match(/^SELECT MAX/)) return cb(null, [{max: 6}], ['MAX'])
+    it('should handle extra event from second mysql read without doubling', aasync(() => {
+      const esp = Object.create(Esp.EspPrototype)
+      esp.options = {amqp: {exchange: 'fooEvents'}}
 
-            //if (sql.match(/^SELECT \*/)) {
-            const stream = new Stream
-            process.nextTick(() => {
-              stream.emit('result', {eventNumber: 5})
-              stream.emit('result', {eventNumber: 6})
-              stream.emit('result', {eventNumber: 7})
-              stream.emit('end')
-            })
-            return stream
-          }
-        })},
-        amqpLib:  {connect: options => Promise.resolve({createChannel: () => Promise.resolve({
-          assertExchange: (exchange, type, options) => Promise.resolve(),
-          assertQueue:    (queue, options)  => Promise.resolve({queue: 'foo'}),
-          bindQueue:      (queue, exchange) => Promise.resolve(),
+      esp.mysqlPool = {
+        query:   (query, values, cb) => {
+          const sql = query.replace(/\?/g, () => values.shift())
+          if (sql.match(/^SELECT MAX/)) return cb(null, [{max: 6}], ['MAX'])
+
+          const stream = new Stream
+          process.nextTick(() => {
+            stream.emit('result', {eventNumber: 5})
+            stream.emit('result', {eventNumber: 6})
+            stream.emit('result', {eventNumber: 7})
+            stream.emit('end')
+          })
+          return stream
+        }
+      }
+      esp.amqpConn = {
+        createChannel: () => Promise.resolve({
+          assertExchange: () => Promise.resolve(),
+          assertQueue:    () => Promise.resolve({queue: 'foo'}),
+          bindQueue:      () => Promise.resolve(),
           consume:        (queue, cb, options)  => {
             process.nextTick(() => cb({content: new Buffer(JSON.stringify({eventNumber: 7}))}))
             process.nextTick(() => cb({content: new Buffer(JSON.stringify({eventNumber: 8}))}))
             return Promise.resolve()
           },
           close:          () => Promise.resolve(),
-        })})}
-      }))
+        })
+      }
 
       const stream = esp.readStreamEventsUntil('mystream', 5, 8)
       const events = await_(_(stream))
@@ -372,35 +338,37 @@ describe('esp mysql rabbit', () => {
     }))
 
     it('should wait for coming events if not all exist', aasync(() => {
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({
-          connect: cb => cb(),
-          query:   (query, values, cb) => {
-            const sql = query.replace(/\?/g, () => values.shift())
-            if (sql.match(/^SELECT MAX/)) return cb(null, [{max: 6}], ['MAX'])
+      const esp = Object.create(Esp.EspPrototype)
+      esp.options = {amqp: {exchange: 'fooEvents'}}
 
-            //if (sql.match(/^SELECT \*/)) {
-            const stream = new Stream
-            process.nextTick(() => {
-              stream.emit('result', {eventNumber: 5})
-              stream.emit('result', {eventNumber: 6})
-              stream.emit('end')
-            })
-            return stream
-          }
-        })},
-        amqpLib:  {connect: options => Promise.resolve({createChannel: () => Promise.resolve({
+      esp.mysqlPool = {
+        query:   (query, values, cb) => {
+          const sql = query.replace(/\?/g, () => values.shift())
+          if (sql.match(/^SELECT MAX/)) return cb(null, [{max: 6}], ['MAX'])
+
+          const stream = new Stream
+          process.nextTick(() => {
+            stream.emit('result', {eventNumber: 5})
+            stream.emit('result', {eventNumber: 6})
+            stream.emit('end')
+          })
+          return stream
+        }
+      }
+      esp.amqpConn = {
+        createChannel: () => Promise.resolve({
           assertExchange: (exchange, type, options) => Promise.resolve(),
           assertQueue:    (queue, options)  => Promise.resolve({queue: 'foo'}),
           bindQueue:      (queue, exchange) => Promise.resolve(),
-          consume:        (queue, cb, options)  => Promise.resolve(process.nextTick(() => cb({
-            content: new Buffer(JSON.stringify({eventNumber: 7}))
-          }))),
+          consume:        (queue, cb, options) => {
+            process.nextTick(() => cb({
+              content: new Buffer(JSON.stringify({eventNumber: 7}))
+            }))
+            return Promise.resolve()
+          },
           close: () => Promise.resolve()
-        })})}
-      }))
+        })
+      }
 
       const stream = esp.readStreamEventsUntil('mystream', 5, 7)
       const events = await_(_(stream))
@@ -411,31 +379,30 @@ describe('esp mysql rabbit', () => {
     }))
 
     it('should respect timeout', aasync(() => {
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({
-          connect: cb => cb(),
-          query:   (query, values, cb) => {
-            const sql = query.replace(/\?/g, () => values.shift())
-            if (sql.match(/^SELECT MAX/)) return cb(null, [6], ['MAX'])
+      const esp = Object.create(Esp.EspPrototype)
+      esp.options = {amqp: {exchange: 'fooEvents'}}
 
-            //if (sql.match(/^SELECT \*/)) {
-            const stream = new Stream
-            process.nextTick(() => {
-              stream.emit('end')
-            })
-            return stream
-          }
-        })},
-        amqpLib:  {connect: options => Promise.resolve({createChannel: () => Promise.resolve({
+      esp.mysqlPool = {
+        query:   (query, values, cb) => {
+          const sql = query.replace(/\?/g, () => values.shift())
+          if (sql.match(/^SELECT MAX/)) return cb(null, [6], ['MAX'])
+
+          const stream = new Stream
+          process.nextTick(() => {
+            stream.emit('end')
+          })
+          return stream
+        }
+      }
+      esp.amqpConn = {
+        createChannel: () => Promise.resolve({
           assertExchange: (exchange, type, options) => Promise.resolve(),
           assertQueue:    (queue, options)          => Promise.resolve({queue: 'foo'}),
           bindQueue:      (queue, exchange)         => Promise.resolve(),
           consume:        (queue, cb, options)      => Promise.resolve(),
           close:          ()                        => Promise.resolve()
-        })})}
-      }))
+        })
+      }
 
       const clock = sinon.useFakeTimers()
       const stream = esp.readStreamEventsUntil('mystream', 7, 8, {timeout: 9000})
@@ -448,17 +415,21 @@ describe('esp mysql rabbit', () => {
 
   describe('esp.writeEvents()', () => {
     it('should add events to mysql in a transaction and send them to rabbit', aasync(() => {
+      const esp = Object.create(Esp.EspPrototype)
+      esp.options = {amqp: {exchange: 'fooEvents'}}
+
       const mysqlCalls     = []
       const amqpPublished  = []
-      let exchangeAsserted = false
 
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({
-          connect:          cb => cb(),
-          beginTransaction: cb => cb(),
-          commit:           cb => cb(),
+      const beginTransaction = sinon.stub().callsArg(0)
+      const commit           = sinon.stub().callsArg(0)
+      const release          = sinon.spy()
+      const assertExchange   = sinon.stub().returns(Promise.resolve())
+
+      esp.mysqlPool = {
+        getConnection: cb => {cb(null, {
+          beginTransaction: beginTransaction,
+          commit:           commit,
           query:   (query, values, cb) => {
             const sql = query.replace(/\?/g, () => JSON.stringify(values.shift()))
             mysqlCalls.push(sql)
@@ -471,12 +442,15 @@ describe('esp mysql rabbit', () => {
               }])
             }
             cb(null, 'foo')
-          }
-        })},
-        amqpLib:  {connect: options => Promise.resolve({createChannel: () => Promise.resolve({
-          assertExchange: (exchange, type, options) => Promise.resolve(exchangeAsserted = true),
-          bindQueue:      (queue, exchange)         => Promise.resolve(),
-          close:          ()                        => Promise.resolve(),
+          },
+          release: release,
+        })}
+      }
+      esp.amqpConn = {
+        createChannel: () => Promise.resolve({
+          assertExchange: assertExchange,
+          bindQueue:      () => Promise.resolve(),
+          close:          () => Promise.resolve(),
           publish:        (exchange, routingKey, content) => {
             amqpPublished.push({
               exchange:   exchange,
@@ -485,8 +459,8 @@ describe('esp mysql rabbit', () => {
             })
             return true
           },
-        })})}
-      }))
+        })
+      }
 
       const written = aawait(esp.writeEvents('mystream', -1, false, [
         {eventId: esp.createGuid(), data: {foo: 'bar'}},
@@ -496,24 +470,26 @@ describe('esp mysql rabbit', () => {
       assert.equal(written.result, 0)
       assert.equal(written.firstEventNumber, 0)
       assert.equal(written.lastEventNumber, 1)
-      assert(mysqlCalls[3].indexOf('2016-04-14 14:35:17.402727') > 0)
-      assert(mysqlCalls[3].indexOf('{\\"baz\\":\\"qux\\"}') > 0)
+      assert(mysqlCalls[2].indexOf('2016-04-14 14:35:17.402727') > 0)
+      assert(mysqlCalls[2].indexOf('{\\"baz\\":\\"qux\\"}') > 0)
       assert.equal(amqpPublished.length, 2)
-      assert(exchangeAsserted, 'Exchange must be asserted')
+      assert(assertExchange.calledOnce)
       assert(amqpPublished[0].content instanceof Buffer)
       assert.equal(JSON.parse(amqpPublished[0].content).globalPosition, 0)
       assert.equal(JSON.parse(amqpPublished[1].content).globalPosition, 1)
+      assert(release.calledOnce)
     }))
 
     it('should handle existing event eventNumber 0', aasync(() => {
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {exchange: 'events'},
-        mysqlLib: {createConnection: options => ({
-          connect:          cb => cb(),
+      const esp = Object.create(Esp.EspPrototype)
+      esp.options = {amqp: {exchange: 'fooEvents'}}
+
+      esp.mysqlPool = {
+        getConnection: cb => {cb(null, {
           beginTransaction: cb => cb(),
           commit:           cb => cb(),
           rollback:         cb => cb(),
+          release:          () => {},
           query:   (query, values, cb) => {
             const sql = query.replace(/\?/g, () => JSON.stringify(values.shift()))
 
@@ -526,14 +502,16 @@ describe('esp mysql rabbit', () => {
             }
             cb(null, 'foo')
           }
-        })},
-        amqpLib:  {connect: options => Promise.resolve({createChannel: () => Promise.resolve({
-          assertExchange: (exchange, type, options) => Promise.resolve(),
-          bindQueue:      (queue, exchange)         => Promise.resolve(),
-          close:          ()                        => Promise.resolve(),
-          publish:        (exchange, routingKey, content) => true,
-        })})}
-      }))
+        })}
+      }
+      esp.amqpConn = {
+        createChannel: () => Promise.resolve({
+          assertExchange: () => Promise.resolve(),
+          bindQueue:      () => Promise.resolve(),
+          close:          () => Promise.resolve(),
+          publish:        () => true,
+        })
+      }
 
       const written = aawait(esp.writeEvents('mystream', 0, false, [
         {eventId: esp.createGuid(), data: {foo: 'bar'}},
@@ -547,12 +525,7 @@ describe('esp mysql rabbit', () => {
 
   describe('Some constants…', () => {
     it('should have ExpectedVersion', aasync(() => {
-      const esp = aawait(Esp({
-        mysql:    {},
-        amqp:     {},
-        mysqlLib: {createConnection: options => ({connect: cb => cb(), query: () => {}})},
-        amqpLib:  {connect: options => Promise.resolve()}
-      }))
+      const esp = Object.create(Esp.EspPrototype)
 
       assert.equal(esp.ExpectedVersion.NoStream, -1)
       assert.equal(esp.ExpectedVersion.Any,      -2)
