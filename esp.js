@@ -336,15 +336,17 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
       events.forEach(event => {
         event.globalPosition = ++globalPosition
         event.eventNumber    = ++eventNumber
+        event.updated        = updated
+        event.streamId       = streamId
       })
 
       const eventsData = events.map(event => [
         event.globalPosition,
-        streamId,
+        event.streamId,
         event.eventNumber,
         uuid2Binary(event.eventId),
         event.eventType,
-        updated,
+        event.updated,
         JSON.stringify(event.data)
       ])
 

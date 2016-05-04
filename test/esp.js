@@ -496,6 +496,11 @@ describe('esp mysql rabbit', () => {
       assert(assertExchange.calledOnce)
       assert(amqpPublished[0].content instanceof Buffer)
       assert.equal(JSON.parse(amqpPublished[0].content).globalPosition, 0)
+      assert.equal(JSON.parse(amqpPublished[0].content).streamId, 'mystream')
+      assert.equal(
+        JSON.parse(amqpPublished[0].content).updated,
+        '2016-04-14 14:35:17.402727'
+      )
       assert.equal(JSON.parse(amqpPublished[1].content).globalPosition, 1)
       assert(release.calledOnce)
     }))
