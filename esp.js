@@ -275,6 +275,8 @@ const uuid2Binary = uuid => {
   return new Buffer(uuid.replace(/\-/g, ''), 'hex')
 }
 
+let debugCounter = 0
+
 EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, events) {
   let mysqlConn = null // We need to have the connection even for errors.
 
@@ -288,14 +290,20 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
     .then(connection => {
       mysqlConn = connection
 
-      return new Promise((resolve, reject) => {
-        connection.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ', [], (err) => {
+      return new Promise((resolve, reject) => connection.query(
+        'SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ', [],
+        err => {
           if (err) return reject(err)
-
           mysqlConn.beginTransaction(err => (err ? reject(err) : resolve()))
-        })
-      })
+        }
+      ))
     })
+
+    // Make a global lock by agreement (since next-key-locking can produce deadlocks).
+    .then(() => new Promise((resolve, reject) => mysqlConn.query(
+      'SELECT 1 FROM events WHERE globalPosition = 0 FOR UPDATE', [],
+      (err, result) => (err ? reject(err) : resolve())
+    )))
 
     // Lock stream rows.
     .then(() => Promise.all([
@@ -303,7 +311,7 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
         'SELECT '
           + '  MAX(globalPosition) as globalPosition, '
           + '  UTC_TIMESTAMP(6) AS date '
-          + 'FROM events FOR UPDATE', [],
+          + 'FROM events', [],
         (err, result) => (err ? reject(err) : resolve(result[0]))
       )),
       new Promise((resolve, reject) => mysqlConn.query(
