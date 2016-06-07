@@ -66,3 +66,5 @@ eventNumber, it WILL throw an error.
 **esp.readAllEventsForward()** is implemented.
 
 **esp.subscribeToAllFrom()** is implemented.
+
+**esp.subscribeToStreamFrom()** is implemented.
