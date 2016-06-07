@@ -166,13 +166,52 @@ EspPrototype.readStreamEventsForward = function(streamId, from, params) {
   return stream
 }
 
+EspPrototype.subscribeToStreamFrom = function(streamId, from, params) {
+  const options = Object.assign({}, this.defaults, params)
+  const stream  = new EventStoreStream()
+
+  Promise.resolve()
+    .then(() => {
+      const subStream = this.subscribeToStream(streamId, params)
+      subStream.on('error', err => stream.emit('error', err))
+      subStream.pause()
+      stream.close = subStream.close
+
+      let eventNumber = -1
+      return Promise.all([
+        subStream,
+        new Promise((resolve, reject) => this.readAllEventsForward(position, options)
+          .on('error', err   => reject(err))
+          .on('end',   ()    => resolve(eventNumber))
+          .on('data',  event => {
+            stream.push(event)
+            eventNumber = event.eventNumber
+          })
+        )
+      ])
+    })
+    .then(result => {
+      const subStream   = result[0]
+      const eventNumber = result[1]
+
+      subStream.on('data', event => {
+        if (event.eventNumber > eventNumber) stream.push(event)
+      })
+      subStream.on('end', () => end())
+      subStream.resume()
+    })
+    .catch(err => stream.emit('error', err))
+
+  return stream
+}
+
 EspPrototype.subscribeToAllFrom = function(position, params) {
   const options = Object.assign({}, this.defaults, params)
   const stream  = new EventStoreStream()
 
   Promise.resolve()
     .then(() => {
-      const subStream = this.subscribeToStream('#')
+      const subStream = this.subscribeToStream('#', params)
       subStream.on('error', err => stream.emit('error', err))
       subStream.pause()
       stream.close = subStream.close
@@ -209,7 +248,7 @@ EspPrototype.readStreamEventsUntil = function(streamId, from, to, params) {
   const options = Object.assign({}, this.defaults, params, {maxCount: to - from + 1})
   const stream  = new EventStoreStream()
   const timer   = setTimeout(
-    () => stream.emit('error', new Error('Timeout reached')),
+    () => stream.emit('error', new TimeoutError('Timeout reached')),
     options.timeout
   )
 
@@ -416,5 +455,12 @@ EspPrototype.ExpectedVersion = {
   NoStream: -1,
 }
 
+function TimeoutError(message) {
+  this.name    = 'TimeoutError'
+  this.message = message
+}
+TimeoutError.prototype = Error.prototype
+
 module.exports = Esp
+module.exports.TimeoutError = TimeoutError
 module.exports.EspPrototype = EspPrototype // Exposing for tests.
