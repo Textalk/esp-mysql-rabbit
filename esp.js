@@ -180,7 +180,7 @@ EspPrototype.subscribeToStreamFrom = function(streamId, from, params) {
       let eventNumber = -1
       return Promise.all([
         subStream,
-        new Promise((resolve, reject) => this.readStreamEventsForward(from, options)
+        new Promise((resolve, reject) => this.readStreamEventsForward(streamId, from, options)
           .on('error', err   => reject(err))
           .on('end',   ()    => resolve(eventNumber))
           .on('data',  event => {
