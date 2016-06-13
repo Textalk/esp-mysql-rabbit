@@ -226,9 +226,8 @@ describe('esp mysql rabbit', () => {
 
       assert.equal(events.length, 3)
       assert.equal(events[2].eventNumber, 2)
-      assert.equal(mysqlValues[0], 'fubar')
-      assert.equal(mysqlValues[1], 'mystream')
-      assert.equal(mysqlValues[2], 0)
+      assert.equal(mysqlValues[0], 'mystream')
+      assert.equal(mysqlValues[1], 0)
       assert(release.calledOnce)
     }))
   })
