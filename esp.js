@@ -135,9 +135,9 @@ EspPrototype.readAllEventsForward = function(from, params) {
     if (err) return stream.emit('error', err)
 
     const query = connection.query(
-      'SELECT * FROM ? WHERE globalPosition >= ? ' +
+      `SELECT * FROM ${this.options.eventsTable} WHERE globalPosition >= ? ` +
         'ORDER BY globalPosition LIMIT ?',
-      [this.options.eventsTable, from, options.maxCount]
+      [from, options.maxCount]
     )
     query
       .on('error',  err => stream.emit('error', err))
@@ -156,9 +156,10 @@ EspPrototype.readStreamEventsForward = function(streamId, from, params) {
     if (err) return stream.emit('error', err)
 
     const query = connection.query(
-      'SELECT * FROM ? WHERE streamId = ? AND eventNumber >= ? ' +
+      `SELECT * FROM ${this.options.eventsTable} ` +
+        'WHERE streamId = ? AND eventNumber >= ? ' +
         'ORDER BY eventNumber LIMIT ?',
-      [this.options.eventsTable, streamId, from, options.maxCount]
+      [streamId, from, options.maxCount]
     )
     query
       .on('error',  err => stream.emit('error', err))
@@ -267,8 +268,9 @@ EspPrototype.readStreamEventsUntil = function(streamId, from, to, params) {
       this.mysqlPool.getConnection((err, connection) => {
         if (err) return reject(err)
         connection.query(
-          'SELECT MAX(eventNumber) AS max FROM ? WHERE streamId = ?',
-          [this.options.eventsTable, streamId],
+          `SELECT MAX(eventNumber) AS max FROM ${this.options.eventsTable} ` +
+            'WHERE streamId = ?',
+          [streamId],
           (err, result, fields) => {
             connection.release()
             if (err) return reject(err)
@@ -343,7 +345,8 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
 
     // Make a global lock by agreement (since next-key-locking can produce deadlocks).
     .then(() => new Promise((resolve, reject) => mysqlConn.query(
-      'SELECT 1 FROM ? WHERE globalPosition = 0 FOR UPDATE', [this.options.eventsTable],
+      `SELECT 1 FROM ${this.options.eventsTable} WHERE globalPosition = 0 ` +
+        'FOR UPDATE', [],
       (err, result) => (err ? reject(err) : resolve())
     )))
 
@@ -353,12 +356,12 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
         'SELECT '
           + '  MAX(globalPosition) as globalPosition, '
           + '  UTC_TIMESTAMP(6) AS date '
-          + 'FROM ?', [this.options.eventsTable],
+          + `FROM ${this.options.eventsTable}`, [],
         (err, result) => (err ? reject(err) : resolve(result[0]))
       )),
       new Promise((resolve, reject) => mysqlConn.query(
         'SELECT MAX(eventNumber) AS eventNumber '
-          + 'FROM ? WHERE streamId = ?', [this.options.eventsTable, streamId],
+          + `FROM ${this.options.eventsTable} WHERE streamId = ?`, [streamId],
         (err, result) => (err ? reject(err) : resolve(result[0].eventNumber))
       )),
     ]))
@@ -397,10 +400,10 @@ EspPrototype.writeEvents = function(streamId, expectedVersion, requireMaster, ev
       return Promise.all([
         eventNumber,
         new Promise((resolve, reject) => mysqlConn.query(
-          'INSERT INTO ? '
+          `INSERT INTO ${this.options.eventsTable} `
             + '(globalPosition, streamId, eventNumber, eventId, eventType, updated, data) '
             + 'VALUES ?',
-          [this.options.eventsTable, eventsData],
+          [eventsData],
           (err, result) => (err ? reject(err) : resolve(result))
         ))
       ])
