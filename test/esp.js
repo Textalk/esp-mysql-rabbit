@@ -170,6 +170,7 @@ describe('esp mysql rabbit', () => {
   describe('esp.readAllEventsForward()', () => {
     it('should get all already stored events', aasync(() => {
       const esp = Object.create(Esp.EspPrototype)
+      esp.options = {eventsTable: 'fubar'}
 
       const myUuidBuffer = new Buffer(32)
       const myUuid       = uuid.v4({}, myUuidBuffer)
@@ -197,6 +198,7 @@ describe('esp mysql rabbit', () => {
   describe('esp.readStreamEventsForward()', () => {
     it('should get all already stored events when starting at 0', aasync(() => {
       const esp = Object.create(Esp.EspPrototype)
+      esp.options = {eventsTable: 'fubar'}
 
       const release = sinon.spy()
       let mysqlValues = null
@@ -224,8 +226,9 @@ describe('esp mysql rabbit', () => {
 
       assert.equal(events.length, 3)
       assert.equal(events[2].eventNumber, 2)
-      assert.equal(mysqlValues[0], 'mystream')
-      assert.equal(mysqlValues[1], 0)
+      assert.equal(mysqlValues[0], 'fubar')
+      assert.equal(mysqlValues[1], 'mystream')
+      assert.equal(mysqlValues[2], 0)
       assert(release.calledOnce)
     }))
   })
@@ -270,6 +273,7 @@ describe('esp mysql rabbit', () => {
   describe('esp.readStreamEventsUntil()', () => {
     it('should return only wanted events', aasync(() => {
       const esp = Object.create(Esp.EspPrototype)
+      esp.options  = {eventsTable: 'fubar'}
       esp.defaults = {timeout: 200}
 
       const mysqlCalls = []
